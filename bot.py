@@ -1,58 +1,47 @@
-import os
 import asyncio
 import aiohttp
 from telegram import Bot
-from telegram.constants import ParseMode
 
-# === НАСТРОЙКИ ===
-TOKEN = os.environ["BOT_TOKEN"]                    # твой токен
-CHAT_ID = -1001234567890                           # ID чата/канала, куда слать алерты
-MIN_AMOUNT_USD = 150_000                            # только ликвидации от $150k
-SYMBOLS = ["BTC", "ETH", "SOL", "XRP", "DOGE"]      # можно добавить любые
+# ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←
+# СЮДА ВСТАВЬ СВОЙ ТОКЕН И ЧАТ
+TOKEN = "7281945672:AAHxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"   # ← твой токен
+CHAT_ID = 987654321                                        # ← твой личный ID или -100xxxxxxxxxx (канал)
+# ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←
 
-# Bybit WebSocket (публичный, без ключа)
-WS_URL = "wss://stream.bybit.com/v5/public/linear"
-
-bot = Bot(token=TOKEN)
-
-async def send_alert(msg: str):
-    try:
-        await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
-    except Exception as e:
-        print("Ошибка отправки:", e)
+MIN_AMOUNT = 150000  # только ликвидации от $150k
 
 async def main():
-    print("Бот ликвидаций запущен — ждёт жирные лики...")
+    bot = Bot(token=TOKEN)
+    print("Бот ликвидаций запущен — жду жирные лики...")
+
     async with aiohttp.ClientSession() as session:
-        async with session.ws_connect(WS_URL) as ws:
-            # подписываемся на канал ликвидаций
-            await ws.send_json({
-                "op": "subscribe",
-                "args": ["liquidation.BTCUSDT", "liquidation.ETHUSDT"] + [f"liquidation.{s}USDT" for s in SYMBOLS if s != "BTC" and s != "ETH"]
-            })
+        async with session.ws_connect("wss://stream.bybit.com/v5/public/linear") as ws:
+            await ws.send_json({"op": "subscribe", "args": ["liquidation.BTCUSDT", "liquidation.ETHUSDT"]})
 
             async for msg in ws:
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    data = msg.json()
-                    if data.get("topic", "").startswith("liquidation."):
-                        liq = data["data"][0]
-                        symbol = liq["symbol"].replace("USDT", "")
-                        side = "LONG" if liq["side"] == "Sell" else "SHORT"
-                        price = float(liq["price"])
-                        size = float(liq["size"])
-                        value_usd = price * size
+                if msg.type != aiohttp.WSMsgType.TEXT:
+                    continue
+                data = msg.json()
+                if not data.get("data"):
+                    continue
 
-                        if value_usd >= MIN_AMOUNT_USD:
-                            text = f"""
-LIQ ${value_usd:,.0f}
+                liq = data["data"][0]
+                symbol = liq["symbol"][:-4]  # убираем USDT
+                side = "LONG" if liq["side"] == "Sell" else "SHORT"
+                price = float(liq["price"])
+                size = float(liq["size"])
+                value = price * size
+
+                if value >= MIN_AMOUNT:
+                    text = f"""
+LIQ ${value:,.0f}
 {symbol}/USDT — <b>{side}</b> ликвидирован
 Цена: <code>${price:,.0f}</code>
-Объём: {size:,.1f} {symbol}
-Биржа: Bybit
-                            """.strip()
+Объём: {size:.2f} {symbol}
+Bybit • только что
+                    """.strip()
 
-                            await send_alert(text)
-                            print(f"Отправлено: {value_usd:,.0f} {symbol} {side}")
+                    await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="HTML")
+                    print(f"Отправлено: {value:,.0f} {symbol} {side}")
 
-if __name__ == "__main__":
-    asyncio.run(main())
+asyncio.run(main())
